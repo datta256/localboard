@@ -5,14 +5,18 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.inputmethodservice.InputMethodService
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.util.Log
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.FrameLayout
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -26,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -66,11 +71,8 @@ class LocalboardKeyboardService : InputMethodService(), LifecycleOwner, ViewMode
             refreshAvailableModels()
             try {
                 val path = llamaService?.getLoadedModelPath()
-                if (path != null) {
-                    currentModelPath = path
-                } else if (availableModels.isNotEmpty()) {
-                    loadModel(availableModels[0])
-                }
+                if (path != null) currentModelPath = path
+                else if (availableModels.isNotEmpty()) loadModel(availableModels[0])
             } catch (e: Exception) { Log.e("Keyboard", "Sync error", e) }
         }
         override fun onServiceDisconnected(name: ComponentName?) { llamaService = null }
@@ -122,7 +124,7 @@ class LocalboardKeyboardService : InputMethodService(), LifecycleOwner, ViewMode
     }
 
     override fun onCreateInputView(): View {
-        val root = FrameLayout(this)
+        val frameLayout = FrameLayout(this)
         val composeView = ComposeView(this).apply {
             setViewTreeLifecycleOwner(this@LocalboardKeyboardService)
             setViewTreeViewModelStoreOwner(this@LocalboardKeyboardService)
@@ -133,8 +135,8 @@ class LocalboardKeyboardService : InputMethodService(), LifecycleOwner, ViewMode
                 }
             }
         }
-        root.addView(composeView)
-        return root
+        frameLayout.addView(composeView)
+        return frameLayout
     }
 
     @Composable
@@ -143,7 +145,7 @@ class LocalboardKeyboardService : InputMethodService(), LifecycleOwner, ViewMode
             .fillMaxWidth()
             .wrapContentHeight()
             .background(Color(0xFF121212))
-            .padding(bottom = 24.dp) // Added 24dp of space at the very bottom
+            .padding(bottom = 24.dp)
         ) {
             Column {
                 // Toolbar
@@ -161,6 +163,17 @@ class LocalboardKeyboardService : InputMethodService(), LifecycleOwner, ViewMode
                     
                     Spacer(modifier = Modifier.weight(1f))
                     
+                    // TPS TRACKER (Visible in cyan)
+                    if (isGenerating || currentTps > 0) {
+                        Text(
+                            text = "%.1f t/s".format(currentTps),
+                            color = Color.Green,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                    }
+
                     if (currentModelPath.isNotEmpty()) {
                         Text(
                             File(currentModelPath).name.take(12) + "...",
@@ -200,7 +213,7 @@ class LocalboardKeyboardService : InputMethodService(), LifecycleOwner, ViewMode
             }
             Row(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
                 Button(
-                    onClick = { generatedText = ""; isGenerating = true; llamaService?.generateText(userPrompt, callback) },
+                    onClick = { generatedText = ""; currentTps = 0f; isGenerating = true; llamaService?.generateText(userPrompt, callback) },
                     enabled = !isGenerating && userPrompt.isNotEmpty(),
                     modifier = Modifier.weight(1f).height(36.dp),
                     contentPadding = PaddingValues(0.dp)
@@ -258,25 +271,54 @@ class LocalboardKeyboardService : InputMethodService(), LifecycleOwner, ViewMode
     fun Key(label: String, modifier: Modifier = Modifier) {
         val finalLabel = if (isShifted && label.length == 1 && keySet == KeySet.LETTERS) label.uppercase() else label
         
+        // AUTO-REPEAT LOGIC FOR BACKSPACE
+        var isRepeating by remember { mutableStateOf(false) }
+        val handler = remember { Handler(Looper.getMainLooper()) }
+        val runnable = remember {
+            object : Runnable {
+                override fun run() {
+                    handleBackspace()
+                    handler.postDelayed(this, 100)
+                }
+            }
+        }
+
         Box(
             modifier = modifier
                 .padding(2.dp)
                 .height(52.dp)
                 .background(if (label == " " || label.length > 1) Color(0xFF4A4A4A) else Color(0xFF333333), RoundedCornerShape(6.dp))
-                .clickable {
-                    when (label) {
-                        "⇧" -> {
-                            if (keySet == KeySet.SYMBOLS) keySet = KeySet.NUMBERS
-                            else if (keySet == KeySet.NUMBERS) keySet = KeySet.SYMBOLS
-                            else isShifted = !isShifted
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onPress = {
+                            if (label == "⌫") {
+                                handleBackspace()
+                                try {
+                                    awaitRelease()
+                                } finally {
+                                    handler.removeCallbacks(runnable)
+                                }
+                            } else {
+                                when (label) {
+                                    "⇧" -> {
+                                        if (keySet == KeySet.SYMBOLS) keySet = KeySet.NUMBERS
+                                        else if (keySet == KeySet.NUMBERS) keySet = KeySet.SYMBOLS
+                                        else isShifted = !isShifted
+                                    }
+                                    " " -> handleKeyPress(" ")
+                                    "?123" -> keySet = KeySet.SYMBOLS
+                                    "ABC" -> keySet = KeySet.LETTERS
+                                    "Enter" -> currentInputConnection?.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))
+                                    else -> handleKeyPress(finalLabel)
+                                }
+                            }
+                        },
+                        onLongPress = {
+                            if (label == "⌫") {
+                                handler.postDelayed(runnable, 100)
+                            }
                         }
-                        "⌫" -> handleBackspace()
-                        " " -> handleKeyPress(" ")
-                        "?123" -> keySet = KeySet.SYMBOLS
-                        "ABC" -> keySet = KeySet.LETTERS
-                        "Enter" -> currentInputConnection?.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))
-                        else -> handleKeyPress(finalLabel)
-                    }
+                    )
                 },
             contentAlignment = Alignment.Center
         ) {
