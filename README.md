@@ -69,6 +69,14 @@ To achieve **Picollama-level speeds**, we use several native optimizations in `n
 
 ---
 
+---
+
+## 🎥 Demo (1m 32s)
+
+<video controls muted style="max-height:640px; min-height: 200px" src="https://github.com/user-attachments/assets/ac5d0945-04e6-4a5f-b4f6-e5f37cfb68f4"></video>   
+
+--- 
+
 ## 🤝 Contributing
 
 Contributions are welcome! Whether it's adding emoji support, improving the QWERTY layout, or optimizing the Vulkan backend, feel free to open a PR.
